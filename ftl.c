@@ -703,11 +703,10 @@ static void clean_one_block(struct ssd *ssd, struct ppa *ppa)
             gc_read_page(ssd, ppa);
             /* delay the maptbl update until "write" happens */
             gc_write_page(ssd, ppa);
-            ssd->gc_data_size_for_WAF += spp->secsz * spp->secs_per_pg;
             cnt++;
         }
     }
-
+    ssd->gc_valid_page_move_count += cnt;
     ftl_assert(get_blk(ssd, ppa)->vpc == cnt);
 }
 
@@ -919,12 +918,11 @@ static void *ftl_thread(void *arg)
     FILE *GC = fopen("log_GC", "w+");
     FILE *WAF = fopen("log_WAF", "w+");
 
-
-    // 실제 시간 기준
     fprintf(IOPS, "Time Read Write\n");
     fprintf(throughput, "Time Read Write\n");
     fprintf(GC, "Time Blocks\n");
     fprintf(WAF, "Time WAF\n");
+
     uint64_t init_time;
     uint64_t curr_time_1sec;
     uint64_t prev_time_1sec;
@@ -933,10 +931,8 @@ static void *ftl_thread(void *arg)
 
     uint64_t read_IO, write_IO;
     uint64_t read_throughput, write_throughput;
-    uint64_t req_size;
 
     read_IO = write_IO = read_throughput = write_throughput = 0;
-    req_size = 0;
 
     while (!*(ssd->dataplane_started_ptr)) {
         usleep(100000);
@@ -949,13 +945,12 @@ static void *ftl_thread(void *arg)
     prev_time_10sec = \
     init_time = \
     qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-
     /* FIXME: not safe, to handle ->to_ftl and ->to_poller gracefully */
     ssd->to_ftl = n->to_ftl;
     ssd->to_poller = n->to_poller;
 
     ssd->gc_erase_block_count = 0;
-    ssd->gc_data_size_for_WAF = 0;
+    ssd->gc_valid_page_move_count = 0;
     while (1) {
         for (i = 1; i <= n->nr_pollers; i++) {
             if (!ssd->to_ftl[i] || !femu_ring_count(ssd->to_ftl[i]))
@@ -971,13 +966,11 @@ static void *ftl_thread(void *arg)
             case NVME_CMD_WRITE:
                 write_IO++;
                 write_throughput += req->nlb * ssd->sp.secsz;
-                req_size += req->nlb * ssd->sp.secsz;
                 lat = ssd_write(ssd, req);
                 break;
             case NVME_CMD_READ:
                 read_IO++;
                 read_throughput += req->nlb * ssd->sp.secsz;
-                req_size += req->nlb * ssd->sp.secsz;
                 lat = ssd_read(ssd, req);
                 break;
             case NVME_CMD_DSM:
@@ -996,8 +989,8 @@ static void *ftl_thread(void *arg)
                 
                 fflush(IOPS);
 
-                fprintf(throughput, "%10ld %10ld %10ld\n", \
-                (curr_time_1sec - init_time) / (uint64_t)1e6, read_throughput / (uint64_t)(1024 * 1024), write_throughput / (uint64_t)(1024 * 1024));
+                fprintf(throughput, "%10ld %10lf %10lf\n", \
+                (curr_time_1sec - init_time) / (uint64_t)1e6, (double)read_throughput / (double)(1024 * 1024), (double)write_throughput / (double)(1024 * 1024));
                 
                 
                 fflush(throughput);
@@ -1006,8 +999,8 @@ static void *ftl_thread(void *arg)
             if (curr_time_10sec - prev_time_10sec >= 1e10) {
                 prev_time_10sec = curr_time_10sec;
                 if (read_IO + write_IO > 0) {
-                    fprintf(WAF, "%10ld %10lf\n", \
-                    (curr_time_10sec - init_time) / (uint64_t)1e6, (double)(req_size + ssd->gc_data_size_for_WAF) / (double)(req_size));
+                    fprintf(WAF, "%10ld %10ld\n", \
+                    (curr_time_10sec - init_time) / (uint64_t)1e6, ssd->gc_valid_page_move_count);
                     fflush(WAF);
                 }
 
@@ -1015,7 +1008,7 @@ static void *ftl_thread(void *arg)
                 (curr_time_10sec - init_time) / (uint64_t)1e6, ssd->gc_erase_block_count);
                 
                 fflush(GC);
-				req_size = ssd->gc_data_size_for_WAF = ssd->gc_erase_block_count = 0;
+				ssd->gc_valid_page_move_count = ssd->gc_erase_block_count = 0;
             }
 
             req->reqlat = lat;

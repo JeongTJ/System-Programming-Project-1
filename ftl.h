@@ -209,7 +209,7 @@ struct ssd {
     bool *dataplane_started_ptr;
     QemuThread ftl_thread;
     uint64_t gc_erase_block_count;
-	uint64_t gc_data_size_for_WAF;
+	uint64_t gc_valid_page_move_count;
 };
 
 void ssd_init(FemuCtrl *n);
